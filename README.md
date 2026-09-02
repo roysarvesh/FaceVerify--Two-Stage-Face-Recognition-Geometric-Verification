@@ -162,13 +162,35 @@ on every redeploy/restart. Fine for a live demo; for a permanent addition,
 add photos to `data/train/` locally, rerun `build_database.py`, and commit
 the updated `.pkl`.
 
-**Why `opencv-python`, not `opencv-python-headless`, in `requirements.txt`:**
-`deepface` itself hard-pins `opencv-python` as a dependency. Requesting
-`opencv-python-headless` alongside it would install *both* packages side by
-side - the exact "two conflicting cv2 installs" problem that caused
-`CascadeClassifier` errors during local setup. `packages.txt` supplies the
-system libraries (`libgl1`, etc.) that `opencv-python` needs instead, which
-is the more reliable fix on a headless Linux container.
+**Why `opencv-python-headless`, not `opencv-python`:** `deepface` and
+`mediapipe` both pull in a full/GUI OpenCV build as a transitive dependency
+(`opencv-python` and `opencv-contrib-python` respectively), even though this
+app never opens a GUI window. On Streamlit Community Cloud's current base
+image, the system library those GUI builds need (`libglib2.0-0`) is
+**broken** - it depends on `libffi7`, which no longer exists on that image,
+so `apt-get install libglib2.0-0` fails outright and can't be worked around
+from `packages.txt`. Explicitly requiring `opencv-python-headless` (which
+has no GUI/glib dependency at all) and keeping `packages.txt` to just
+`libgl1` sidesteps the broken package entirely. This is a known,
+currently-unresolved Streamlit Cloud platform issue, not something fixable
+by changing which packages you list - see the [Streamlit community thread
+on this exact error](https://discuss.streamlit.io/t/streamlit-cloud-apt-deps-failing-opencv-import-errors-libgl-libgthread/121648).
+
+**Note on `packages.txt` formatting:** unlike a normal apt sources file,
+Streamlit Cloud's parser does **not** strip `#` comments - it passes every
+whitespace-separated token straight to `apt-get install`, including comment
+text, which fails with `Unable to locate package <word>` for each word in a
+comment. Keep `packages.txt` to bare package names only, one per line, no
+comments.
+
+**If you still see a `cv2` import error after this fix:** `deepface` and
+`mediapipe` both hard-pin their own OpenCV variant, so more than one OpenCV
+package can end up installed side by side; whichever finishes installing
+last "wins" the shared `cv2` folder in site-packages. Explicitly listing
+`opencv-python-headless` first in `requirements.txt` (as this project does)
+is the standard fix, but if a redeploy/reboot ever reintroduces the error,
+try **Manage app -> Reboot app** (a full clean reinstall), or clear the
+build cache and redeploy from scratch.
 
 ## Tuning
 
