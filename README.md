@@ -130,6 +130,46 @@ This is how you reproduce (and can cite) a concrete false-positive reduction
 number for your own dataset — actual numbers depend on your images, so run
 it on your data before quoting a specific percentage.
 
+## Streamlit app
+
+`app.py` is a Streamlit front-end over the same pipeline - upload a photo or
+use your webcam, see the match/uncertain/no-match decision live, tune
+thresholds with sliders, and manage the database (add a person, rebuild)
+from the browser instead of the command line.
+
+**Run locally:**
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+Opens at `http://localhost:8501`.
+
+**Deploy on Streamlit Community Cloud:**
+1. Make sure `data/embeddings_db.pkl` and `models/face_landmarker.task` are
+   committed to your repo (both are small - just numbers/weights, not raw
+   images). `.gitignore` already excludes `data/train/` and `data/test/`
+   so the ~2,000 training photos never get pushed.
+2. Push to GitHub.
+3. Go to [share.streamlit.io](https://share.streamlit.io) -> **New app** ->
+   point it at your repo, branch, and `app.py`.
+4. Streamlit Cloud automatically installs `packages.txt` (system libs
+   `opencv-python` needs on Linux) and `requirements.txt` (Python deps) -
+   nothing else to configure.
+
+**Storage is ephemeral on Streamlit Cloud** - the "Add a new person"
+feature in the app writes to the running container's disk, which is wiped
+on every redeploy/restart. Fine for a live demo; for a permanent addition,
+add photos to `data/train/` locally, rerun `build_database.py`, and commit
+the updated `.pkl`.
+
+**Why `opencv-python`, not `opencv-python-headless`, in `requirements.txt`:**
+`deepface` itself hard-pins `opencv-python` as a dependency. Requesting
+`opencv-python-headless` alongside it would install *both* packages side by
+side - the exact "two conflicting cv2 installs" problem that caused
+`CascadeClassifier` errors during local setup. `packages.txt` supplies the
+system libraries (`libgl1`, etc.) that `opencv-python` needs instead, which
+is the more reliable fix on a headless Linux container.
+
 ## Tuning
 
 All thresholds live in `config.py`:

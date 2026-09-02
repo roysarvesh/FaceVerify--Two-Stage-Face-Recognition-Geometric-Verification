@@ -1,0 +1,9 @@
+[server]
+# Max upload size for a single file, in MB. Default is 200; face photos
+# don't need that much, and a smaller cap avoids someone accidentally
+# uploading something huge on a low-memory free-tier deploy.
+maxUploadSize = 15
+
+[theme]
+base = "light"
+primaryColor = "#2563EB"

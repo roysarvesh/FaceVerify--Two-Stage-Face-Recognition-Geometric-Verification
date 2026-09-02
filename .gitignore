@@ -1,0 +1,18 @@
+# Raw dataset images - large (1000s of files), not needed in the repo.
+# What IS needed for the app to work is data/embeddings_db.pkl, which is
+# small (just numbers) and must be committed - it is NOT excluded below.
+data/train/
+data/test/
+data/test_small/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -99,12 +99,30 @@ class FaceVerifier:
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
-    def verify(self, probe_image_path):
-        cfg = self.cfg
+    def verify(self, probe_image_path, embedding_match_threshold=None,
+               embedding_uncertain_threshold=None, landmark_match_threshold=None):
+        """
+        Runs the two-stage pipeline on a probe image.
+
+        The three threshold arguments are optional per-call overrides for
+        `self.cfg.EMBEDDING_MATCH_THRESHOLD` / `EMBEDDING_UNCERTAIN_THRESHOLD`
+        / `LANDMARK_MATCH_THRESHOLD`. Passing them here (rather than mutating
+        `self.cfg` in place) keeps threshold tweaks local to a single call -
+        important in a multi-user context like a Streamlit app, where `cfg`
+        is a shared, cached object and mutating it would leak one user's
+        slider settings into every other concurrent session.
+        """
+        match_thr = embedding_match_threshold if embedding_match_threshold is not None \
+            else self.cfg.EMBEDDING_MATCH_THRESHOLD
+        uncertain_thr = embedding_uncertain_threshold if embedding_uncertain_threshold is not None \
+            else self.cfg.EMBEDDING_UNCERTAIN_THRESHOLD
+        landmark_thr = landmark_match_threshold if landmark_match_threshold is not None \
+            else self.cfg.LANDMARK_MATCH_THRESHOLD
+
         probe_embedding = self.embedder.embed(probe_image_path)
         best_person, best_distance, ranked = self._best_appearance_match(probe_embedding)
 
-        if best_person is None or best_distance > cfg.EMBEDDING_UNCERTAIN_THRESHOLD:
+        if best_person is None or best_distance > uncertain_thr:
             return VerificationResult(
                 status="no_match", identity=None, embedding_distance=best_distance,
                 reason="No candidate within the embedding distance threshold.",
@@ -115,7 +133,7 @@ class FaceVerifier:
         landmark_distance, note = self._geometry_distance(probe_image, best_person)
 
         # --- Confident appearance match --------------------------------
-        if best_distance <= cfg.EMBEDDING_MATCH_THRESHOLD:
+        if best_distance <= match_thr:
             if landmark_distance is None:
                 return VerificationResult(
                     status="match", identity=best_person, embedding_distance=best_distance,
@@ -123,7 +141,7 @@ class FaceVerifier:
                     reason=f"Strong appearance match; geometry check skipped ({note}).",
                     all_candidates=ranked,
                 )
-            if landmark_distance <= cfg.LANDMARK_MATCH_THRESHOLD:
+            if landmark_distance <= landmark_thr:
                 return VerificationResult(
                     status="match", identity=best_person, embedding_distance=best_distance,
                     landmark_distance=landmark_distance,
@@ -137,12 +155,12 @@ class FaceVerifier:
                 landmark_distance=landmark_distance,
                 reason=(f"Embedding suggested '{best_person}', but facial geometry "
                         f"disagreed (distance {landmark_distance:.3f} > "
-                        f"{cfg.LANDMARK_MATCH_THRESHOLD}) - rejected as a likely false positive."),
+                        f"{landmark_thr}) - rejected as a likely false positive."),
                 all_candidates=ranked,
             )
 
         # --- Borderline appearance match -> let geometry decide ---------
-        if landmark_distance is not None and landmark_distance <= cfg.LANDMARK_MATCH_THRESHOLD:
+        if landmark_distance is not None and landmark_distance <= landmark_thr:
             return VerificationResult(
                 status="match", identity=best_person, embedding_distance=best_distance,
                 landmark_distance=landmark_distance,

@@ -1,7 +1,11 @@
+streamlit>=1.37.0
 deepface>=0.0.93
 mediapipe>=0.10.14
+mtcnn>=1.0.0
 opencv-python>=4.9.0.80
 numpy>=1.26.4
+pandas>=2.0.0
 tqdm>=4.66.4
-tensorflow>=2.15.0
+tensorflow-cpu>=2.15.0
 tf-keras>=2.15.0
+Pillow>=10.0.0

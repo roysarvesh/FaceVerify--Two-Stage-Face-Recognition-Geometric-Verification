@@ -1,0 +1,17 @@
+# System (apt) packages Streamlit Community Cloud installs before pip
+# packages. opencv-python (a hard dependency of deepface - see
+# requirements.txt comment) needs these even though this app never opens a
+# GUI window, because it's compiled against them.
+#
+# NOTE: don't switch requirements.txt to opencv-python-headless to "avoid"
+# needing these - deepface's own requirements.txt hard-pins opencv-python,
+# so pip would install BOTH opencv-python and opencv-python-headless side by
+# side, which is exactly what caused the "cv2 has no attribute
+# CascadeClassifier" / duplicate-install errors seen during local Windows
+# setup. Keeping opencv-python and satisfying it with these system libs is
+# the more reliable fix.
+libgl1
+libglib2.0-0
+libsm6
+libxext6
+libxrender-dev
