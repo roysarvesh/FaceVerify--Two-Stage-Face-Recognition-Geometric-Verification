@@ -192,6 +192,22 @@ is the standard fix, but if a redeploy/reboot ever reintroduces the error,
 try **Manage app -> Reboot app** (a full clean reinstall), or clear the
 build cache and redeploy from scratch.
 
+**Python version — Streamlit Cloud currently defaults to Python 3.14,
+which breaks this app.** TensorFlow (a `deepface` dependency) doesn't ship
+wheels for Python 3.14 at any version yet, so `pip install` fails with "No
+matching distribution found for tensorflow-cpu". `runtime.txt` (pinning
+`python-3.11`) is included to request an older, TensorFlow-compatible
+Python version - but Python version **cannot be changed on an
+already-deployed app**, and `runtime.txt` is unreliable for changing it
+after the fact (a currently-known Streamlit Cloud issue). If your app was
+first deployed before `runtime.txt` was added, do this once:
+1. On Streamlit Cloud, delete the existing app (this doesn't touch your
+   GitHub repo, just the deployment).
+2. Redeploy: point it at the same repo/branch/`app.py`, but before
+   clicking Deploy, open **Advanced settings** and explicitly select
+   **Python 3.11** (or 3.12) from the dropdown.
+3. Future redeploys of that same app will keep using 3.11 automatically.
+
 ## Tuning
 
 All thresholds live in `config.py`:
