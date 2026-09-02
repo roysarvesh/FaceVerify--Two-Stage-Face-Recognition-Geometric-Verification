@@ -212,6 +212,29 @@ always the headless one. If that happens, the winning build needs
 this image (see the `packages.txt` note above). `packages.txt` already
 includes `libglib2.0-0t64` for this reason.
 
+**`OSError` inside `ctypes.CDLL(...)` when loading MediaPipe's native
+library:** MediaPipe's compiled C++ bindings need `libstdc++6` (the C++
+standard library) and `libgomp1` (OpenMP runtime) - neither is covered by
+`libgl1`/`libglib2.0-0t64`, which are only there for OpenCV. `packages.txt`
+includes both for this reason. If this error still appears after adding
+them, check **Manage app -> logs** for the exact missing filename (the
+in-app error message truncates it) and search for that specific package.
+
+**One failed recognition shouldn't crash the whole app:** Streamlit
+re-executes the code inside *every* `st.tabs()` block on every rerun,
+regardless of which tab is visually active, and a `file_uploader`'s value
+persists across reruns within a session. Combined, this means an error
+while processing an uploaded photo doesn't just fail once - it re-fires
+(and crashes the entire app, not just that tab) on every subsequent
+interaction, including simply switching tabs, for as long as that photo
+stays uploaded. `app.py` guards against this two ways: recognition results
+are cached by `(image bytes, thresholds)` via `st.cache_data` so a rerun
+with an unchanged photo doesn't recompute at all, and the verification call
+itself is wrapped in a try/except that surfaces a friendly in-app error
+(with technical details in an expander) instead of raising - so a
+model-loading failure shows up once, in context, rather than taking down
+the whole page.
+
 ## Tuning
 
 All thresholds live in `config.py`:

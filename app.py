@@ -12,33 +12,87 @@ Deploy on Streamlit Community Cloud:
        models/face_landmarker.task - both are small and should be committed
        so the app doesn't have to rebuild the database on every boot).
     2. On streamlit.io/cloud, point a new app at this repo, main file app.py.
-    3. Make sure packages.txt (system deps) and requirements.txt are present
-       at the repo root - Streamlit Cloud reads both automatically.
+    3. Make sure packages.txt (system deps), requirements.txt, and
+       runtime.txt (Python version) are present at the repo root - Streamlit
+       Cloud reads all three automatically. See README.md for the specific
+       platform issues these files work around.
 """
 
+import hashlib
 import os
-import io
 import tempfile
+import traceback
 
-import streamlit as st
-from PIL import Image
 import cv2
 import numpy as np
+import streamlit as st
+from PIL import Image
 
 import config
-from src.database import load_database, build_database
+from src.database import build_database, load_database
 from src.verifier import FaceVerifier
 
 st.set_page_config(
-    page_title="Face Recognition — FaceNet512 + Landmark Verification",
-    page_icon="🧑‍🤝‍🧑",
-    layout="centered",
+    page_title="FaceVerify — Two-Stage Face Recognition",
+    page_icon=":bust_in_silhouette:",
+    layout="wide",
 )
 
 # --------------------------------------------------------------------------- #
-# Cached resources - loaded once per session, not on every rerun/interaction
+# Styling - a light layer of custom CSS on top of Streamlit's native
+# components. Deliberately modest: real containers/columns/metrics do the
+# structural work, CSS just tightens spacing, typography, and adds the
+# status-pill / card look.
 # --------------------------------------------------------------------------- #
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 2rem; max-width: 1100px; }
 
+    .fv-hero {
+        display: flex; align-items: center; gap: 14px;
+        margin-bottom: 0.25rem;
+    }
+    .fv-hero-icon {
+        font-size: 2.1rem; line-height: 1;
+    }
+    .fv-hero h1 {
+        font-size: 1.9rem; font-weight: 750; margin: 0; letter-spacing: -0.02em;
+    }
+    .fv-subtitle {
+        color: #64748b; font-size: 0.98rem; margin-top: 0.15rem; margin-bottom: 1.6rem;
+    }
+
+    .fv-pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 14px; border-radius: 999px;
+        font-weight: 650; font-size: 0.95rem;
+    }
+    .fv-pill-match      { background: #dcfce7; color: #15803d; }
+    .fv-pill-uncertain  { background: #ffedd5; color: #c2410c; }
+    .fv-pill-nomatch    { background: #fee2e2; color: #b91c1c; }
+
+    .fv-stage-card {
+        border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 18px;
+        background: #fafafa; height: 100%;
+    }
+    .fv-stage-card h4 { margin: 0 0 6px 0; font-size: 1rem; }
+    .fv-stage-card p { margin: 0; color: #475569; font-size: 0.9rem; line-height: 1.5; }
+
+    .fv-footnote { color: #94a3b8; font-size: 0.82rem; }
+
+    div[data-testid="stMetric"] {
+        background: #fafafa; border: 1px solid #e2e8f0;
+        border-radius: 10px; padding: 12px 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------------------------------- #
+# Cached resources - loaded once per server process, not on every rerun
+# --------------------------------------------------------------------------- #
 @st.cache_resource(show_spinner="Loading face database...")
 def get_database(db_path):
     return load_database(db_path)
@@ -48,8 +102,38 @@ def get_database(db_path):
 def get_verifier(_database):
     # Streamlit's cache_resource hashes arguments by default; the database
     # dict can be large, so we prefix with "_" to tell Streamlit to skip
-    # hashing it and just cache on first call per session.
+    # hashing it and just cache on first successful call per process.
     return FaceVerifier(_database, config)
+
+
+@st.cache_data(show_spinner="Running two-stage verification...")
+def run_verification(image_bytes: bytes, emb_match: float, emb_uncertain: float, landmark_match: float):
+    """
+    Cached by (image bytes, thresholds). This matters for more than just
+    speed: Streamlit reruns every tab's code on every interaction regardless
+    of which tab is visible, and a file_uploader's value persists across
+    reruns. Without this cache, switching tabs after uploading a photo would
+    silently re-run verification (and re-trigger any transient model-loading
+    error) on every single rerun, not just when the photo changes.
+    """
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(image_bytes)
+            tmp_path = tmp.name
+        database = get_database(config.EMBEDDINGS_DB_PATH)
+        verifier = get_verifier(database)
+        return verifier.verify(
+            tmp_path,
+            embedding_match_threshold=emb_match,
+            embedding_uncertain_threshold=emb_uncertain,
+            landmark_match_threshold=landmark_match,
+        ), None
+    except Exception as e:
+        return None, "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def pil_to_bgr(pil_image: Image.Image) -> np.ndarray:
@@ -57,253 +141,299 @@ def pil_to_bgr(pil_image: Image.Image) -> np.ndarray:
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
-def save_temp_image(pil_image: Image.Image) -> str:
-    """DeepFace/verifier expect a file path, not an in-memory array, so
-    probe images from the uploader are written to a short-lived temp file."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-    pil_image.convert("RGB").save(tmp.name, format="JPEG", quality=95)
-    return tmp.name
-
-
-def status_badge(status: str) -> str:
-    return {
-        "match": "🟢 **MATCH**",
-        "uncertain": "🟠 **UNCERTAIN**",
-        "no_match": "🔴 **NO MATCH**",
-    }.get(status, status)
+def status_pill(status: str, identity: str | None) -> str:
+    if status == "match":
+        return f'<span class="fv-pill fv-pill-match">✅ MATCH — {identity}</span>'
+    if status == "uncertain":
+        return f'<span class="fv-pill fv-pill-uncertain">⚠️ UNCERTAIN — possibly {identity}</span>'
+    return '<span class="fv-pill fv-pill-nomatch">❌ NO MATCH</span>'
 
 
 # --------------------------------------------------------------------------- #
-# Sidebar - database info + threshold controls
+# Header
 # --------------------------------------------------------------------------- #
-
-st.sidebar.title("⚙️ Pipeline settings")
+st.markdown(
+    """
+    <div class="fv-hero">
+        <div class="fv-hero-icon">🧑‍🤝‍🧑</div>
+        <h1>FaceVerify</h1>
+    </div>
+    <div class="fv-subtitle">
+        Two-stage face recognition — FaceNet512 appearance embeddings, verified
+        against MediaPipe facial-landmark geometry.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 db_exists = os.path.exists(config.EMBEDDINGS_DB_PATH)
+database = get_database(config.EMBEDDINGS_DB_PATH) if db_exists else None
 
-if not db_exists:
-    st.sidebar.error(
-        f"No database found at `{config.EMBEDDINGS_DB_PATH}`.\n\n"
-        "Build one from the **Manage database** tab before recognizing faces."
+# --------------------------------------------------------------------------- #
+# Sidebar - database status + threshold controls
+# --------------------------------------------------------------------------- #
+with st.sidebar:
+    st.markdown("### ⚙️ Pipeline settings")
+
+    if not db_exists:
+        st.error(
+            f"No database found at `{config.EMBEDDINGS_DB_PATH}`.\n\n"
+            "Build one from the **Manage database** tab first."
+        )
+    else:
+        n_people = len(database)
+        n_refs = sum(len(v) for v in database.values())
+        with st.container(border=True):
+            st.markdown(f"**Database loaded:** {n_people} identities,  \n{n_refs} reference images")
+
+    st.divider()
+    st.markdown("**Detection thresholds**")
+    st.caption(
+        "These override `config.py` for this session only — tune them here "
+        "to see the effect live, then bake the final values into config.py."
     )
-else:
-    database = get_database(config.EMBEDDINGS_DB_PATH)
-    n_people = len(database)
-    n_refs = sum(len(v) for v in database.values())
-    st.sidebar.success(f"Database loaded: **{n_people}** identities, **{n_refs}** reference images")
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Detection thresholds**")
-st.sidebar.caption(
-    "These override `config.py` for this session only — tune them here to "
-    "see the effect live, then bake the final values into config.py."
-)
+    emb_match = st.slider(
+        "Embedding match threshold", 0.05, 0.60, float(config.EMBEDDING_MATCH_THRESHOLD), 0.01,
+        help="Cosine distance below which Stage 1 (appearance) is confident.",
+    )
+    emb_uncertain = st.slider(
+        "Embedding uncertain threshold", emb_match, 0.80,
+        float(max(config.EMBEDDING_UNCERTAIN_THRESHOLD, emb_match)), 0.01,
+        help="Above this, reject outright without running Stage 2.",
+    )
+    landmark_match = st.slider(
+        "Landmark match threshold", 0.02, 0.40, float(config.LANDMARK_MATCH_THRESHOLD), 0.01,
+        help="Normalized geometry distance Stage 2 requires to agree.",
+    )
+    # NOTE: passed as per-call overrides to verifier.verify(), never written
+    # into the shared config module - config is a single object cached
+    # across every visitor, and mutating it here would leak one user's
+    # slider settings into everyone else's concurrent session.
 
-emb_match = st.sidebar.slider(
-    "Embedding match threshold", 0.05, 0.60, float(config.EMBEDDING_MATCH_THRESHOLD), 0.01,
-    help="Cosine distance below which Stage 1 (appearance) is confident.",
-)
-emb_uncertain = st.sidebar.slider(
-    "Embedding uncertain threshold", emb_match, 0.80, float(config.EMBEDDING_UNCERTAIN_THRESHOLD), 0.01,
-    help="Above this, reject outright without running Stage 2.",
-)
-landmark_match = st.sidebar.slider(
-    "Landmark match threshold", 0.02, 0.40, float(config.LANDMARK_MATCH_THRESHOLD), 0.01,
-    help="Normalized geometry distance Stage 2 requires to agree.",
-)
-
-# NOTE: these are passed as per-call overrides to verifier.verify() below,
-# NOT written into the shared `config` module. `config` is imported once per
-# server process and `get_verifier`'s cache is shared across every visitor -
-# mutating it here would leak one user's slider settings into everyone
-# else's concurrent session. See src/verifier.py's verify() signature.
-
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Stage 1: FaceNet512 appearance embedding match.\n\n"
-    "Stage 2: MediaPipe facial-landmark geometry veto — rejects confident "
-    "appearance matches whose facial proportions disagree, and can confirm "
-    "borderline appearance matches whose geometry agrees."
-)
+    st.divider()
+    st.caption(
+        "**Stage 1:** FaceNet512 appearance embedding match.\n\n"
+        "**Stage 2:** MediaPipe facial-landmark geometry veto — rejects "
+        "confident appearance matches whose facial proportions disagree, "
+        "and can confirm borderline matches whose geometry agrees."
+    )
 
 # --------------------------------------------------------------------------- #
 # Main tabs
 # --------------------------------------------------------------------------- #
-
-tab_recognize, tab_manage, tab_about = st.tabs(["🔍 Recognize", "🗂️ Manage database", "ℹ️ About"])
+tab_recognize, tab_manage, tab_about = st.tabs(["🔍  Recognize", "🗂️  Manage database", "ℹ️  About"])
 
 # --- Recognize tab --------------------------------------------------------- #
 with tab_recognize:
-    st.header("Identify a face")
-
     if not db_exists:
         st.warning("Build or upload a database first (see the **Manage database** tab).")
     else:
-        source = st.radio("Image source", ["Upload a photo", "Use camera"], horizontal=True)
+        left, right = st.columns([1, 1], gap="large")
 
-        pil_image = None
-        if source == "Upload a photo":
-            uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
-            if uploaded is not None:
-                pil_image = Image.open(uploaded)
-        else:
-            camera_file = st.camera_input("Take a photo")
-            if camera_file is not None:
-                pil_image = Image.open(camera_file)
+        with left:
+            source = st.radio("Image source", ["Upload a photo", "Use camera"], horizontal=True, label_visibility="collapsed")
+            pil_image = None
+            if source == "Upload a photo":
+                uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+                if uploaded is not None:
+                    pil_image = Image.open(uploaded)
+            else:
+                camera_file = st.camera_input("Take a photo", label_visibility="collapsed")
+                if camera_file is not None:
+                    pil_image = Image.open(camera_file)
 
-        if pil_image is not None:
-            col1, col2 = st.columns([1, 1])
-            with col1:
+            if pil_image is not None:
                 st.image(pil_image, caption="Probe image", use_container_width=True)
 
-            with st.spinner("Running two-stage verification..."):
-                temp_path = save_temp_image(pil_image)
-                try:
-                    verifier = get_verifier(database)
-                    result = verifier.verify(
-                        temp_path,
-                        embedding_match_threshold=emb_match,
-                        embedding_uncertain_threshold=emb_uncertain,
-                        landmark_match_threshold=landmark_match,
-                    )
-                finally:
-                    os.unlink(temp_path)
-
-            with col2:
-                st.markdown(f"### {status_badge(result.status)}")
-                if result.identity:
-                    st.markdown(f"**Identity:** {result.identity}")
-                st.markdown(f"**Embedding distance:** `{result.embedding_distance:.4f}`"
-                             if result.embedding_distance is not None else "**Embedding distance:** n/a")
-                st.markdown(f"**Landmark distance:** `{result.landmark_distance:.4f}`"
-                             if result.landmark_distance is not None else "**Landmark distance:** n/a")
-                st.caption(result.reason)
-
-            st.markdown("#### Top candidates (appearance only)")
-            if result.all_candidates:
-                st.table(
-                    {
-                        "Person": [p for p, _ in result.all_candidates],
-                        "Embedding distance": [f"{d:.4f}" for _, d in result.all_candidates],
-                    }
+        with right:
+            if pil_image is None:
+                st.markdown(
+                    '<div class="fv-stage-card" style="text-align:center; color:#94a3b8; padding:60px 20px;">'
+                    "Upload or capture a photo to run recognition."
+                    "</div>",
+                    unsafe_allow_html=True,
                 )
+            else:
+                buf = tempfile.SpooledTemporaryFile()
+                pil_image.convert("RGB").save(buf, format="JPEG", quality=95)
+                buf.seek(0)
+                image_bytes = buf.read()
+
+                result, error = run_verification(image_bytes, emb_match, emb_uncertain, landmark_match)
+
+                if error is not None:
+                    st.error(
+                        "Recognition failed. This is usually a model-loading issue on the "
+                        "server (see the README's troubleshooting section) rather than "
+                        "something wrong with your photo."
+                    )
+                    with st.expander("Show technical details"):
+                        st.code(error)
+                else:
+                    st.markdown(status_pill(result.status, result.identity), unsafe_allow_html=True)
+                    st.write("")
+
+                    m1, m2 = st.columns(2)
+                    m1.metric(
+                        "Embedding distance",
+                        f"{result.embedding_distance:.3f}" if result.embedding_distance is not None else "—",
+                    )
+                    m2.metric(
+                        "Landmark distance",
+                        f"{result.landmark_distance:.3f}" if result.landmark_distance is not None else "—",
+                    )
+                    st.caption(result.reason)
+
+                    if result.all_candidates:
+                        st.markdown("**Top candidates (appearance only)**")
+                        st.dataframe(
+                            {
+                                "Person": [p for p, _ in result.all_candidates],
+                                "Embedding distance": [round(d, 4) for _, d in result.all_candidates],
+                            },
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
 # --- Manage database tab ---------------------------------------------------- #
 with tab_manage:
-    st.header("Database management")
-
     st.markdown(
         "The database (`data/embeddings_db.pkl`) stores precomputed FaceNet512 "
-        "embeddings and MediaPipe geometry signatures for every reference image, "
-        "so recognition doesn't have to recompute them on every request."
+        "embeddings and MediaPipe geometry signatures for every reference "
+        "image, so recognition doesn't have to recompute them on every request."
     )
 
     if db_exists:
-        database = get_database(config.EMBEDDINGS_DB_PATH)
         with st.expander(f"View current identities ({len(database)})"):
-            for person, entries in sorted(database.items()):
-                st.write(f"- **{person}** — {len(entries)} reference image(s)")
+            cols = st.columns(3)
+            for i, (person, entries) in enumerate(sorted(database.items())):
+                cols[i % 3].markdown(f"**{person}**  \n{len(entries)} reference image(s)")
 
-    st.markdown("---")
-    st.subheader("Add a new person")
-    st.caption(
-        "Upload a few clear, front-facing photos of one person. They'll be "
-        "added to `data/train/<name>/` and the database will be rebuilt for "
-        "just this person (existing identities are left untouched)."
-    )
-    st.info(
-        ":warning: On Streamlit Community Cloud, storage is **ephemeral** - "
-        "anything added here is written to the running container's disk and "
-        "is lost on redeploy/restart. It's fine for a live demo, but for a "
-        "permanent addition, add the photos to `data/train/` locally, rerun "
-        "`python build_database.py`, and commit the updated "
-        "`data/embeddings_db.pkl`.",
-        icon=":material/info:",
-    )
+    st.divider()
 
-    new_name = st.text_input("Person's name")
-    new_images = st.file_uploader(
-        "Reference photos (2-10 recommended)", type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-    )
+    col_add, col_rebuild = st.columns(2, gap="large")
 
-    if st.button("Add person to database", type="primary", disabled=not (new_name and new_images)):
-        person_dir = os.path.join(config.DATABASE_DIR, new_name.strip())
-        os.makedirs(person_dir, exist_ok=True)
-
-        for i, f in enumerate(new_images):
-            img = Image.open(f).convert("RGB")
-            img.save(os.path.join(person_dir, f"{new_name.strip()}_{i}.jpg"), format="JPEG", quality=95)
-
-        try:
-            with st.spinner(f"Computing embeddings + landmarks for {new_name}..."):
-                build_database(
-                    database_dir=config.DATABASE_DIR,
-                    output_path=config.EMBEDDINGS_DB_PATH,
-                    embedding_model=config.EMBEDDING_MODEL,
-                    detector_backend=config.DETECTOR_BACKEND,
-                )
-        except Exception as e:
-            st.error(f"Couldn't rebuild the database: {e}")
-        else:
-            st.cache_resource.clear()
-            st.success(f"Added **{new_name}** and rebuilt the database.")
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("Rebuild entire database")
-    st.caption(
-        "Re-scans every folder in `data/train/` from scratch. Use this after "
-        "manually adding/removing files outside the app. Requires "
-        "`data/train/` to exist with at least one person's photos - it "
-        "won't exist on a fresh deploy since raw images aren't committed "
-        "to the repo (see `.gitignore`)."
-    )
-    if st.button("Rebuild from data/train/"):
-        if not os.path.isdir(config.DATABASE_DIR):
-            st.error(
-                f"`{config.DATABASE_DIR}` doesn't exist. Add at least one "
-                "person via the form above first, or add photos locally "
-                "and redeploy."
+    with col_add:
+        with st.container(border=True):
+            st.markdown("#### ➕ Add a new person")
+            st.caption(
+                "Upload a few clear, front-facing photos. They'll be added to "
+                "`data/train/<name>/` and the database rebuilt for just this "
+                "person - existing identities are left untouched."
             )
-        else:
-            try:
-                with st.spinner("Rebuilding full database - this can take a while..."):
-                    build_database(
-                        database_dir=config.DATABASE_DIR,
-                        output_path=config.EMBEDDINGS_DB_PATH,
-                        embedding_model=config.EMBEDDING_MODEL,
-                        detector_backend=config.DETECTOR_BACKEND,
+            st.info(
+                "On Streamlit Community Cloud, storage is **ephemeral** - "
+                "anything added here is lost on redeploy/restart. Fine for a "
+                "live demo; for a permanent addition, add photos to "
+                "`data/train/` locally, rerun `build_database.py`, and commit "
+                "the updated `.pkl`.",
+                icon=":material/info:",
+            )
+
+            new_name = st.text_input("Person's name")
+            new_images = st.file_uploader(
+                "Reference photos (2-10 recommended)", type=["jpg", "jpeg", "png"],
+                accept_multiple_files=True, key="add_person_uploader",
+            )
+
+            if st.button("Add person to database", type="primary", disabled=not (new_name and new_images)):
+                person_dir = os.path.join(config.DATABASE_DIR, new_name.strip())
+                os.makedirs(person_dir, exist_ok=True)
+                for i, f in enumerate(new_images):
+                    img = Image.open(f).convert("RGB")
+                    img.save(os.path.join(person_dir, f"{new_name.strip()}_{i}.jpg"), format="JPEG", quality=95)
+
+                try:
+                    with st.spinner(f"Computing embeddings + landmarks for {new_name}..."):
+                        build_database(
+                            database_dir=config.DATABASE_DIR,
+                            output_path=config.EMBEDDINGS_DB_PATH,
+                            embedding_model=config.EMBEDDING_MODEL,
+                            detector_backend=config.DETECTOR_BACKEND,
+                        )
+                except Exception as e:
+                    st.error(f"Couldn't rebuild the database: {e}")
+                else:
+                    st.cache_resource.clear()
+                    st.cache_data.clear()
+                    st.success(f"Added **{new_name}** and rebuilt the database.")
+                    st.rerun()
+
+    with col_rebuild:
+        with st.container(border=True):
+            st.markdown("#### 🔄 Rebuild entire database")
+            st.caption(
+                "Re-scans every folder in `data/train/` from scratch. Use "
+                "after manually adding/removing files outside the app. "
+                "Requires `data/train/` to exist - it won't on a fresh "
+                "deploy, since raw images aren't committed (see `.gitignore`)."
+            )
+            st.write("")
+            if st.button("Rebuild from data/train/"):
+                if not os.path.isdir(config.DATABASE_DIR):
+                    st.error(
+                        f"`{config.DATABASE_DIR}` doesn't exist. Add at least "
+                        "one person via the form first, or add photos locally "
+                        "and redeploy."
                     )
-            except Exception as e:
-                st.error(f"Rebuild failed: {e}")
-            else:
-                st.cache_resource.clear()
-                st.success("Database rebuilt.")
-                st.rerun()
+                else:
+                    try:
+                        with st.spinner("Rebuilding full database - this can take a while..."):
+                            build_database(
+                                database_dir=config.DATABASE_DIR,
+                                output_path=config.EMBEDDINGS_DB_PATH,
+                                embedding_model=config.EMBEDDING_MODEL,
+                                detector_backend=config.DETECTOR_BACKEND,
+                            )
+                    except Exception as e:
+                        st.error(f"Rebuild failed: {e}")
+                    else:
+                        st.cache_resource.clear()
+                        st.cache_data.clear()
+                        st.success("Database rebuilt.")
+                        st.rerun()
 
 # --- About tab --------------------------------------------------------------- #
 with tab_about:
-    st.header("About this pipeline")
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        st.markdown(
+            """
+            <div class="fv-stage-card">
+                <h4>Stage 1 — Appearance</h4>
+                <p>DeepFace computes a 512-d FaceNet512 embedding for the probe
+                image and finds the nearest reference image by cosine
+                distance across every identity in the database.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            """
+            <div class="fv-stage-card">
+                <h4>Stage 2 — Geometry</h4>
+                <p>For the best appearance candidate, MediaPipe's
+                FaceLandmarker extracts a normalized facial geometry
+                signature (eye spacing, jaw width, nose-to-chin distance,
+                etc.) and compares it against that candidate's reference
+                images.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
     st.markdown(
-        """
-**Stage 1 — Appearance (FaceNet512):** DeepFace computes a 512-d embedding
-for the probe image and finds the nearest reference image by cosine distance.
-
-**Stage 2 — Geometry (MediaPipe landmarks):** For the best appearance
-candidate, MediaPipe's FaceLandmarker extracts a normalized facial geometry
-signature (ratios like eye spacing, jaw width, nose-to-chin distance) and
-compares it against the candidate's reference images. Confident appearance
-matches whose geometry disagrees are rejected as likely false positives;
-borderline appearance matches whose geometry agrees get promoted to a
-confirmed match.
-
-This two-stage design is what reduces false positives compared to an
-appearance-only baseline — see `evaluate.py` in the repo for a script that
-measures this on your own test set.
-        """
+        "Confident appearance matches whose geometry **disagrees** are "
+        "rejected as likely false positives; borderline appearance matches "
+        "whose geometry **agrees** get promoted to a confirmed match. This "
+        "two-stage design is what reduces false positives compared to an "
+        "appearance-only baseline - see `evaluate.py` in the repo for a "
+        "script that measures this on your own test set."
     )
-    st.markdown("---")
+    st.divider()
     st.caption(
         "Adjust thresholds in the sidebar to explore the trade-off between "
         "false positives and false negatives for your dataset."
