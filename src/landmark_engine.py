@@ -18,13 +18,9 @@ import urllib.request
 
 import numpy as np
 import cv2
-import mediapipe as mp
-from mediapipe.tasks.python import BaseOptions
-from mediapipe.tasks.python.vision import (
-    FaceLandmarker,
-    FaceLandmarkerOptions,
-    RunningMode,
-)
+
+# NOTE: mediapipe itself is imported lazily inside LandmarkEngine.__init__,
+# not here at module level - see the comment there for why.
 
 # MediaPipe's newer releases (>=0.10.x) ship face landmark detection through
 # the Tasks API rather than the older `mp.solutions.face_mesh` module. The
@@ -85,6 +81,21 @@ class LandmarkEngine:
     FaceLandmarker (Tasks API)."""
 
     def __init__(self, max_num_faces=1, min_detection_confidence=0.5):
+        # Imported lazily, not at module level: mediapipe's import (and the
+        # native library it loads) takes real time, and this class is only
+        # ever instantiated when the two-stage pipeline is actually about to
+        # run a verification - not at app startup. Deferring the import
+        # until here means the app's UI renders immediately on load instead
+        # of blocking on mediapipe's import chain nobody has asked for yet.
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions
+        from mediapipe.tasks.python.vision import (
+            FaceLandmarker,
+            FaceLandmarkerOptions,
+            RunningMode,
+        )
+
+        self._mp = mp
         model_path = _ensure_model()
         options = FaceLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=model_path),
@@ -100,7 +111,7 @@ class LandmarkEngine:
 
         h, w = image_bgr.shape[:2]
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         result = self._landmarker.detect(mp_image)
 
         if not result.face_landmarks:

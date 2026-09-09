@@ -213,12 +213,34 @@ this image (see the `packages.txt` note above). `packages.txt` already
 includes `libglib2.0-0t64` for this reason.
 
 **`OSError` inside `ctypes.CDLL(...)` when loading MediaPipe's native
-library:** MediaPipe's compiled C++ bindings need `libstdc++6` (the C++
-standard library) and `libgomp1` (OpenMP runtime) - neither is covered by
-`libgl1`/`libglib2.0-0t64`, which are only there for OpenCV. `packages.txt`
-includes both for this reason. If this error still appears after adding
-them, check **Manage app -> logs** for the exact missing filename (the
-in-app error message truncates it) and search for that specific package.
+library:** MediaPipe's compiled C++ bindings (`libmediapipe.so`) need
+several system libraries beyond what OpenCV requires. `packages.txt`
+already includes the full set, confirmed by directly inspecting the
+library's dependencies with `ldd` rather than guessing one error at a time:
+`libstdc++6` (C++ standard library), `libgomp1` (OpenMP runtime), `libegl1`
+(`libEGL.so.1`), and `libgles2` (`libGLESv2.so.2`) - on top of
+`libgl1`/`libglib2.0-0t64` already needed by OpenCV.
+
+**If a *different* missing-library error shows up later** (from `cv2`,
+`mediapipe`, or anything else), the fastest way to find every dependency at
+once - rather than fixing one `ImportError` per redeploy - is to inspect
+the actual `.so` file directly instead of guessing:
+```bash
+# find the native library (path varies by package/version)
+python -c "import cv2; print(cv2.__file__)"              # for OpenCV
+python -c "import mediapipe; print(mediapipe.__file__)"  # for MediaPipe
+
+# then, in the same environment (a local Docker container matching
+# Debian trixie is closest to Streamlit Cloud's image):
+ldd /path/to/the/actual_native_module.so
+```
+Anything in the output resolving to a path inside the package's own
+bundled `.libs` folder is fine and needs nothing extra; anything resolving
+to a system path (or showing `=> not found`) is a real system dependency.
+Search [packages.debian.org](https://packages.debian.org) for each missing
+filename to find the exact package name - and check for a `t64`-suffixed
+rename on trixie before assuming the "obvious" package name is correct
+(see the `libglib2.0-0` note above).
 
 **One failed recognition shouldn't crash the whole app:** Streamlit
 re-executes the code inside *every* `st.tabs()` block on every rerun,
@@ -234,6 +256,24 @@ itself is wrapped in a try/except that surfaces a friendly in-app error
 (with technical details in an expander) instead of raising - so a
 model-loading failure shows up once, in context, rather than taking down
 the whole page.
+
+**App startup speed:** `deepface` (which pulls in TensorFlow) and
+`mediapipe` are both imported *lazily* - inside `EmbeddingEngine.embed()`
+and `LandmarkEngine.__init__()` respectively, not at module level. Both
+libraries take real time to import (several seconds for TensorFlow
+especially), and previously that cost was paid on every single app boot,
+before the UI even rendered, regardless of whether anyone had uploaded a
+photo yet. Now the sidebar, tabs, and database stats appear immediately;
+the model-loading cost is only paid the first time someone actually runs a
+recognition (or clicks the sidebar's **Warm up models** button, which lets
+you pay that cost proactively right after a cold start instead of on your
+first real photo).
+
+**Theme:** dark, configured in `.streamlit/config.toml`
+(`base = "dark"` plus custom accent/background colors) - Streamlit's native
+widgets (sliders, buttons, tabs) pick this up automatically, and `app.py`
+layers a light custom-CSS pass on top for card depth, status-pill glow, and
+tightened typography.
 
 ## Tuning
 

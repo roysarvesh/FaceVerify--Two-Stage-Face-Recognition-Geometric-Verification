@@ -39,10 +39,11 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------- #
-# Styling - a light layer of custom CSS on top of Streamlit's native
-# components. Deliberately modest: real containers/columns/metrics do the
-# structural work, CSS just tightens spacing, typography, and adds the
-# status-pill / card look.
+# Styling - a premium dark theme layered on top of Streamlit's native
+# components (which already pick up the dark base + primaryColor from
+# .streamlit/config.toml). Real containers/columns/metrics still do the
+# structural work; CSS adds card depth, glow accents, and refines
+# typography/spacing on top of that.
 # --------------------------------------------------------------------------- #
 st.markdown(
     """
@@ -55,36 +56,74 @@ st.markdown(
     }
     .fv-hero-icon {
         font-size: 2.1rem; line-height: 1;
+        filter: drop-shadow(0 0 10px rgba(99, 102, 241, 0.45));
     }
     .fv-hero h1 {
-        font-size: 1.9rem; font-weight: 750; margin: 0; letter-spacing: -0.02em;
+        font-size: 1.95rem; font-weight: 750; margin: 0; letter-spacing: -0.02em;
+        background: linear-gradient(90deg, #A5B4FC 0%, #E5E7EB 60%);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
     }
     .fv-subtitle {
-        color: #64748b; font-size: 0.98rem; margin-top: 0.15rem; margin-bottom: 1.6rem;
+        color: #94A3B8; font-size: 0.98rem; margin-top: 0.15rem; margin-bottom: 1.6rem;
     }
 
     .fv-pill {
         display: inline-flex; align-items: center; gap: 6px;
-        padding: 5px 14px; border-radius: 999px;
+        padding: 6px 16px; border-radius: 999px;
         font-weight: 650; font-size: 0.95rem;
+        border: 1px solid transparent;
     }
-    .fv-pill-match      { background: #dcfce7; color: #15803d; }
-    .fv-pill-uncertain  { background: #ffedd5; color: #c2410c; }
-    .fv-pill-nomatch    { background: #fee2e2; color: #b91c1c; }
+    .fv-pill-match {
+        background: rgba(34, 197, 94, 0.12); color: #4ADE80;
+        border-color: rgba(74, 222, 128, 0.35);
+        box-shadow: 0 0 16px rgba(34, 197, 94, 0.15);
+    }
+    .fv-pill-uncertain {
+        background: rgba(245, 158, 11, 0.12); color: #FBBF24;
+        border-color: rgba(251, 191, 36, 0.35);
+        box-shadow: 0 0 16px rgba(245, 158, 11, 0.12);
+    }
+    .fv-pill-nomatch {
+        background: rgba(239, 68, 68, 0.12); color: #F87171;
+        border-color: rgba(248, 113, 113, 0.35);
+        box-shadow: 0 0 16px rgba(239, 68, 68, 0.12);
+    }
 
     .fv-stage-card {
-        border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 18px;
-        background: #fafafa; height: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px;
+        padding: 18px 20px; background: #131826; height: 100%;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
     }
-    .fv-stage-card h4 { margin: 0 0 6px 0; font-size: 1rem; }
-    .fv-stage-card p { margin: 0; color: #475569; font-size: 0.9rem; line-height: 1.5; }
+    .fv-stage-card h4 { margin: 0 0 8px 0; font-size: 1.02rem; color: #E5E7EB; }
+    .fv-stage-card p { margin: 0; color: #94A3B8; font-size: 0.9rem; line-height: 1.55; }
 
-    .fv-footnote { color: #94a3b8; font-size: 0.82rem; }
+    .fv-footnote { color: #64748B; font-size: 0.82rem; }
 
+    /* Metric cards */
     div[data-testid="stMetric"] {
-        background: #fafafa; border: 1px solid #e2e8f0;
-        border-radius: 10px; padding: 12px 16px;
+        background: #131826; border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px; padding: 14px 18px;
     }
+    div[data-testid="stMetricValue"] { color: #E0E7FF; }
+
+    /* Bordered st.container(border=True) cards */
+    div[data-testid="stVerticalBlockBorderWrapper"] > div {
+        background: #131826; border-radius: 14px;
+        border-color: rgba(255, 255, 255, 0.08) !important;
+    }
+
+    /* Sliders - glow the thumb/track with the accent color for a
+       premium feel; Streamlit already colors these from primaryColor,
+       this just adds depth. */
+    div[data-testid="stSlider"] div[role="slider"] {
+        box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.18);
+    }
+    div[data-testid="stSlider"] { padding-bottom: 6px; }
+
+    /* Tabs */
+    button[data-baseweb="tab"] { font-weight: 600; }
+
+    hr { border-color: rgba(255, 255, 255, 0.08) !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -186,6 +225,17 @@ with st.sidebar:
         with st.container(border=True):
             st.markdown(f"**Database loaded:** {n_people} identities,  \n{n_refs} reference images")
 
+        # Models (FaceNet512/TensorFlow + MediaPipe) load lazily on first
+        # use, not at app startup, so the UI above appears instantly. This
+        # button lets a user pay that one-time cost proactively - handy
+        # right after a cold start, so the *first* actual recognition
+        # isn't the one that eats the load time.
+        if st.button("⚡ Warm up models", use_container_width=True,
+                      help="Pre-loads FaceNet512 + MediaPipe now instead of on your first photo."):
+            with st.spinner("Loading FaceNet512 + MediaPipe..."):
+                get_verifier(database)
+            st.toast("Models ready.", icon="⚡")
+
     st.divider()
     st.markdown("**Detection thresholds**")
     st.caption(
@@ -249,7 +299,7 @@ with tab_recognize:
         with right:
             if pil_image is None:
                 st.markdown(
-                    '<div class="fv-stage-card" style="text-align:center; color:#94a3b8; padding:60px 20px;">'
+                    '<div class="fv-stage-card" style="text-align:center; color:#64748B; padding:60px 20px;">'
                     "Upload or capture a photo to run recognition."
                     "</div>",
                     unsafe_allow_html=True,

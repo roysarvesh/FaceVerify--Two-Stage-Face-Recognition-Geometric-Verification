@@ -7,7 +7,6 @@ nearest-neighbor matching against the reference database.
 """
 
 import numpy as np
-from deepface import DeepFace
 
 
 class EmbeddingEngine:
@@ -20,6 +19,13 @@ class EmbeddingEngine:
     def embed(self, image_path):
         """Returns the FaceNet512 embedding (np.ndarray) for the primary face
         found in the image."""
+        # Imported lazily, not at module level: `deepface` pulls in
+        # TensorFlow, which takes several seconds to import. Deferring this
+        # until the first actual embedding request means the app's UI
+        # (sidebar, tabs, database stats) renders immediately on load
+        # instead of blocking on a TensorFlow import nobody asked for yet.
+        from deepface import DeepFace
+
         reps = DeepFace.represent(
             img_path=image_path,
             model_name=self.model_name,

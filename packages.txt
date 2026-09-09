@@ -2,3 +2,5 @@ libgl1
 libglib2.0-0t64
 libstdc++6
 libgomp1
+libegl1
+libgles2
