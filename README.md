@@ -47,18 +47,26 @@ lost entirely.
 ```
 face_recognition_project/
 ├── config.py               # paths + thresholds (portable, no hardcoded machine paths)
-├── requirements.txt
+├── requirements.txt        # deployed app - kept lean, no sklearn/matplotlib
+├── requirements-dev.txt    # extra deps for train_classifier.py only
+├── app.py                  # Streamlit UI
 ├── build_database.py       # CLI: precompute embeddings + landmarks for data/train/
 ├── recognize.py            # CLI: identify one probe image, save annotated output
 ├── evaluate.py             # CLI: baseline vs. pipeline false-positive comparison
+├── train_classifier.py     # CLI: trains + evaluates the learned Stage 2 (ROC/EER)
 ├── src/
 │   ├── embedding_engine.py # DeepFace/FaceNet512 wrapper (Stage 1)
-│   ├── landmark_engine.py  # MediaPipe FaceMesh geometry signature (Stage 2)
+│   ├── landmark_engine.py  # MediaPipe FaceLandmarker geometry signature (Stage 2)
 │   ├── database.py         # builds/loads the precomputed reference database
+│   ├── pairs.py            # genuine/impostor pair mining for train_classifier.py
+│   ├── learned_gate.py     # dependency-free inference wrapper for the trained classifier
 │   └── verifier.py         # combines both stages into one verify() call
 ├── data/
 │   ├── train/<person_name>/*.jpg   # <- put your reference images here
-│   └── test/<person_name>/*.jpg    # <- optional, for evaluate.py
+│   ├── test/<person_name>/*.jpg    # <- held out, for evaluate.py and train_classifier.py
+│   ├── stage2_classifier.json      # trained Stage-2 model (generated)
+│   ├── roc_curve.png               # ROC comparison plot (generated)
+│   └── evaluation_report.md        # full evaluation writeup (generated)
 └── legacy_lbph_baseline/   # your original files, kept for reference:
     ├── original_deepface_only_script.py  # the single-stage script you uploaded
     ├── haar_face.xml, face_trained.yml, features.npy, labels.npy  # OpenCV LBPH model
@@ -274,6 +282,68 @@ first real photo).
 widgets (sliders, buttons, tabs) pick this up automatically, and `app.py`
 layers a light custom-CSS pass on top for card depth, status-pill glow, and
 tightened typography.
+
+## Rigorous evaluation: ROC, EER, and a learned Stage 2
+
+`config.py`'s original thresholds (`EMBEDDING_MATCH_THRESHOLD = 0.30`, etc.)
+were reasonable starting guesses, not values derived from data.
+`train_classifier.py` replaces guessing with the standard face-verification
+evaluation methodology - cross-validated ROC curves and Equal Error Rate
+(EER) - and, honestly, the result changed the story of this project.
+
+**Methodology.** `src/pairs.py` mines genuine/impostor pairs from
+`data/test/` (511 images, never used to build the training database) against
+`data/embeddings_db.pkl`. For each test image, the *genuine* sample is its
+distance to its own identity; the *impostor* sample is its distance to the
+**nearest wrong identity** - the hardest case, i.e. exactly the situation
+Stage 2 exists to catch, not a random unrelated person that would be
+trivially easy to reject.
+
+**What running it actually found**, on 1,009 pairs from this dataset (see
+`data/evaluation_report.md` and `data/roc_curve.png` after running it):
+
+| | AUC | EER |
+|---|---|---|
+| A) Stage 1 alone (embedding distance) | 0.993 | 3.4% |
+| C) Learned classifier (embedding + landmark) | 0.992 | 3.8% |
+
+The two ROC curves sit almost exactly on top of each other. **On this
+dataset, MediaPipe's geometry signal adds essentially nothing measurable
+beyond the embedding distance alone** - the fitted classifier's own weights
+confirm it (`w_embedding_distance` ≈ -13.4 vs. `w_landmark_distance` ≈
+-0.9, roughly a 14:1 ratio). This dataset's photos are mostly clean,
+frontal, high-quality celebrity images - exactly the case FaceNet512
+already handles well on its own, leaving little room for a second signal
+to add value. A harder test set (poor lighting, extreme angles,
+adversarial look-alikes) would very plausibly show geometry mattering
+more; this one doesn't.
+
+**What *did* clearly matter:**
+
+| | FPR | FNR | Accuracy |
+|---|---|---|---|
+| B) Original hand-tuned rule (`config.py`) | 27.1% | 23.3% | 74.8% |
+| C) Learned classifier at target 1% FPR | 1.0% | 7.3% (93% TPR) | ~96% |
+
+The hand-tuned nested-threshold rule sits **far** off the achievable ROC
+curve - not a close call. The real improvement this evaluation produced
+isn't "two stages beat one," it's "a properly calibrated decision boundary
+beats hand-picked thresholds," which is why `USE_LEARNED_STAGE2 = True` is
+now the default in `config.py`: `FaceVerifier` uses the trained classifier
+(`data/stage2_classifier.json`) instead of the nested-threshold rule.
+Inference stays dependency-free - `src/learned_gate.py` is just a sigmoid
+over three saved numbers, no sklearn needed in the deployed app (see
+`requirements-dev.txt` vs. `requirements.txt`).
+
+**To reproduce or retrain:**
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python train_classifier.py                      # default: target 1% FPR
+python train_classifier.py --target-fpr 0.005    # stricter operating point
+```
+Rerun this after changing the training set, the embedding model, or the
+landmark feature set - the saved classifier is only valid for the data
+distribution it was fit on.
 
 ## Tuning
 

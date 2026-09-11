@@ -37,3 +37,31 @@ EMBEDDING_UNCERTAIN_THRESHOLD = 0.45
 # MediaPipe FaceMesh-derived facial ratios). At or below this -> geometry
 # agrees with the appearance match -> confirm identity.
 LANDMARK_MATCH_THRESHOLD = 0.15
+
+# ---------------------------------------------------------------------------
+# Learned Stage 2 (optional) - see train_classifier.py
+# ---------------------------------------------------------------------------
+# If True and the model file below exists, FaceVerifier uses a trained
+# logistic-regression classifier over [embedding_distance, landmark_distance]
+# instead of the nested EMBEDDING_MATCH_THRESHOLD/LANDMARK_MATCH_THRESHOLD
+# rule above. Run `python train_classifier.py` first to produce the model
+# file and an honest cross-validated ROC/EER report justifying it - see
+# data/evaluation_report.md after running it.
+#
+# On this dataset the evaluation showed the hand-tuned rule above sitting
+# well off the achievable ROC curve (27% FPR / 23% FNR vs. ~1% FPR at
+# ~93% TPR available from the same two features, properly calibrated) -
+# so the learned classifier is enabled by default. See
+# data/evaluation_report.md for the honest headline finding: geometry adds
+# almost nothing beyond the embedding distance alone on this dataset
+# (AUC 0.992 vs 0.993) - the fitted classifier's own weights reflect that
+# (embedding weighted ~14x more heavily than landmark). The real
+# improvement here isn't "two stages beat one" - it's "a data-calibrated
+# threshold beats a hand-picked one."
+USE_LEARNED_STAGE2 = True
+LEARNED_STAGE2_MODEL_PATH = os.path.join(PROJECT_ROOT, "data", "stage2_classifier.json")
+
+# Probabilities within this margin of the learned model's decision
+# threshold are reported as "uncertain" rather than a hard match/no_match -
+# mirrors the spirit of the original three-way rule-based outcome.
+LEARNED_STAGE2_UNCERTAIN_MARGIN = 0.10

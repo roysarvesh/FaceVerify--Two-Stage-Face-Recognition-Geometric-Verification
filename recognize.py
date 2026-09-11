@@ -28,6 +28,8 @@ def annotate(image_path, result, output_path):
         label = f"{result.identity} (emb={result.embedding_distance:.3f}"
         if result.landmark_distance is not None:
             label += f", geo={result.landmark_distance:.3f}"
+        if result.match_probability is not None:
+            label += f", p={result.match_probability:.2f}"
         label += ")"
         color = (0, 200, 0)
     elif result.status == "uncertain":
@@ -63,6 +65,8 @@ def main():
     print(f"Identity:           {result.identity}")
     print(f"Embedding distance: {result.embedding_distance}")
     print(f"Landmark distance:  {result.landmark_distance}")
+    if result.match_probability is not None:
+        print(f"Match probability:  {result.match_probability:.3f}  (learned Stage-2 classifier)")
     print(f"Reason:             {result.reason}")
     print("\nTop candidates (appearance only):")
     for person, dist in result.all_candidates:

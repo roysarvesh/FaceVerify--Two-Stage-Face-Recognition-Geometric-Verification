@@ -324,7 +324,7 @@ with tab_recognize:
                     st.markdown(status_pill(result.status, result.identity), unsafe_allow_html=True)
                     st.write("")
 
-                    m1, m2 = st.columns(2)
+                    m1, m2, m3 = st.columns(3) if result.match_probability is not None else (*st.columns(2), None)
                     m1.metric(
                         "Embedding distance",
                         f"{result.embedding_distance:.3f}" if result.embedding_distance is not None else "—",
@@ -333,6 +333,8 @@ with tab_recognize:
                         "Landmark distance",
                         f"{result.landmark_distance:.3f}" if result.landmark_distance is not None else "—",
                     )
+                    if m3 is not None:
+                        m3.metric("Match probability", f"{result.match_probability:.1%}")
                     st.caption(result.reason)
 
                     if result.all_candidates:

@@ -24,6 +24,7 @@ from typing import Optional, List, Tuple
 
 from .embedding_engine import EmbeddingEngine
 from .landmark_engine import LandmarkEngine, LandmarkExtractionError
+from .learned_gate import LearnedGate
 
 
 @dataclass
@@ -34,6 +35,7 @@ class VerificationResult:
     landmark_distance: Optional[float] = None
     reason: str = ""
     all_candidates: List[Tuple[str, float]] = field(default_factory=list)  # top matches, appearance-only
+    match_probability: Optional[float] = None    # only set when the learned Stage-2 gate is used
 
 
 class FaceVerifier:
@@ -46,6 +48,21 @@ class FaceVerifier:
             enforce_detection=cfg.ENFORCE_DETECTION,
         )
         self.landmarker = LandmarkEngine()
+
+        # Optional: a trained logistic-regression Stage-2 gate (see
+        # train_classifier.py), used instead of the nested-threshold rule
+        # when enabled. Loading is best-effort - if the model file doesn't
+        # exist (e.g. train_classifier.py hasn't been run yet), we silently
+        # fall back to the rule-based thresholds rather than erroring, so
+        # this is a strict opt-in that never breaks an existing deployment.
+        self.learned_gate = None
+        if getattr(cfg, "USE_LEARNED_STAGE2", False):
+            model_path = getattr(cfg, "LEARNED_STAGE2_MODEL_PATH", None)
+            if model_path:
+                try:
+                    self.learned_gate = LearnedGate(model_path)
+                except Exception:
+                    self.learned_gate = None
 
     def close(self):
         self.landmarker.close()
@@ -132,7 +149,31 @@ class FaceVerifier:
         probe_image = cv2.imread(probe_image_path)
         landmark_distance, note = self._geometry_distance(probe_image, best_person)
 
-        # --- Confident appearance match --------------------------------
+        # --- Learned Stage-2 gate (opt-in) ------------------------------
+        # Only used once Stage 1 has already narrowed things down to a
+        # plausible candidate (best_distance <= uncertain_thr, checked
+        # above) - the classifier was trained on realistic "nearest wrong
+        # candidate" distances, not arbitrary out-of-range ones, so we
+        # don't hand it degenerate inputs it never saw during training.
+        if self.learned_gate is not None and landmark_distance is not None:
+            is_match, probability = self.learned_gate.is_match(best_distance, landmark_distance)
+            margin = getattr(self.cfg, "LEARNED_STAGE2_UNCERTAIN_MARGIN", 0.1)
+            if abs(probability - self.learned_gate.threshold) <= margin:
+                status = "uncertain"
+                reason = (f"Learned classifier probability ({probability:.2f}) is close to its "
+                          f"decision threshold ({self.learned_gate.threshold:.2f}) - too close to call.")
+            elif is_match:
+                status, reason = "match", f"Learned classifier: probability={probability:.2f} >= threshold."
+            else:
+                status, reason = "no_match", f"Learned classifier: probability={probability:.2f} < threshold."
+            return VerificationResult(
+                status=status,
+                identity=best_person if status != "no_match" else None,
+                embedding_distance=best_distance, landmark_distance=landmark_distance,
+                reason=reason, all_candidates=ranked, match_probability=probability,
+            )
+
+        # --- Confident appearance match (hand-tuned rule) ---------------
         if best_distance <= match_thr:
             if landmark_distance is None:
                 return VerificationResult(
