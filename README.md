@@ -60,6 +60,8 @@ face_recognition_project/
 │   ├── database.py         # builds/loads the precomputed reference database
 │   ├── pairs.py            # genuine/impostor pair mining for train_classifier.py
 │   ├── learned_gate.py     # dependency-free inference wrapper for the trained classifier
+│   ├── person_info.py      # Wikipedia lookup for "who is this" after a match
+│   ├── image_lab.py        # rotation/morphology/edges/contours/diagnostics playground
 │   └── verifier.py         # combines both stages into one verify() call
 ├── data/
 │   ├── train/<person_name>/*.jpg   # <- put your reference images here
@@ -282,6 +284,54 @@ first real photo).
 widgets (sliders, buttons, tabs) pick this up automatically, and `app.py`
 layers a light custom-CSS pass on top for card depth, status-pill glow, and
 tightened typography.
+
+## "Who is this?" — person info lookup
+
+After a confirmed match, the Recognize tab shows a short bio card for the
+identified person - name, summary, thumbnail, and a link to read more.
+This uses **Wikipedia's public REST API** (`src/person_info.py`):
+`action=query&list=search` to find the best-matching page title, then the
+`page/summary` endpoint for the actual bio.
+
+**Why Wikipedia and not a general web/Google search:** a real Google
+Search API (Custom Search JSON API, SerpAPI, etc.) needs an API key,
+billing setup, and per-query cost - not something that should be a
+required step just to get this project running. Wikipedia's API needs
+none of that and works immediately on a fresh deploy, which matters more
+here than search-result breadth. The real limitation: it only returns
+something for identities with a Wikipedia page - fine for the celebrities
+in this project's dataset, not for a private individual. Swapping in a
+paid search API later is a drop-in change: implement the same
+`fetch_person_summary(name) -> {title, extract, url, thumbnail} | None`
+contract in `src/person_info.py` against whichever API you choose, and
+nothing else in `app.py` needs to change.
+
+Lookups are cached per name for 24 hours (`st.cache_data(ttl=...)` in
+`app.py`) so switching tabs or re-running recognition on the same person
+doesn't re-hit the API every time.
+
+## Image Lab — OpenCV playground
+
+A separate tab (independent of the recognition pipeline - works on any
+image, not just faces) for classic image-processing operations, all in
+`src/image_lab.py`:
+
+- **Rotation** - arbitrary angle, canvas auto-expanded so corners aren't
+  cropped off (unlike a naive same-size `warpAffine`).
+- **Morphological transforms** - Erode, Dilate, Opening, Closing,
+  Gradient, Top Hat, Black Hat, with adjustable kernel size, shape
+  (rectangle/ellipse/cross), and iteration count.
+- **Edge detection** - Canny, with both thresholds exposed as sliders.
+- **Contour detection** - built on Canny edges + `cv2.findContours`,
+  with a minimum-area filter to drop noise; draws kept contours on the
+  image and reports the count.
+- **Image characteristics** - dimensions, file size, mean brightness,
+  and a sharpness/blur estimate (variance of the Laplacian - a standard,
+  cheap proxy: a sharp image has a lot of high-frequency edge content, a
+  blurry one doesn't), plus mean and sampled-dominant color.
+
+Operations chain in order (rotate → morphology → edges/contours), so you
+can e.g. rotate first and then run edge detection on the rotated result.
 
 ## Rigorous evaluation: ROC, EER, and a learned Stage 2
 

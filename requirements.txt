@@ -9,3 +9,4 @@ tqdm>=4.66.4
 tensorflow-cpu>=2.15.0
 tf-keras>=2.15.0
 Pillow>=10.0.0
+requests>=2.31.0

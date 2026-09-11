@@ -19,6 +19,7 @@ Deploy on Streamlit Community Cloud:
 """
 
 import hashlib
+import io
 import os
 import tempfile
 import traceback
@@ -31,6 +32,11 @@ from PIL import Image
 import config
 from src.database import build_database, load_database
 from src.verifier import FaceVerifier
+from src.person_info import fetch_person_summary
+from src.image_lab import (
+    rotate_image, apply_morphology, detect_edges, detect_contours,
+    image_characteristics, MORPH_OPERATIONS, MORPH_SHAPES,
+)
 
 st.set_page_config(
     page_title="FaceVerify — Two-Stage Face Recognition",
@@ -175,6 +181,15 @@ def run_verification(image_bytes: bytes, emb_match: float, emb_uncertain: float,
             os.unlink(tmp_path)
 
 
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)  # cache a day: bios don't change minute to minute
+def get_person_summary(name: str):
+    """Cached wrapper around the Wikipedia lookup - avoids re-fetching the
+    same identity's bio on every rerun (tab switches, threshold tweaks,
+    etc.), and caches the "nothing found" case too so a repeated lookup
+    for an obscure name doesn't hammer the API every time."""
+    return fetch_person_summary(name)
+
+
 def pil_to_bgr(pil_image: Image.Image) -> np.ndarray:
     rgb = np.array(pil_image.convert("RGB"))
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -272,7 +287,9 @@ with st.sidebar:
 # --------------------------------------------------------------------------- #
 # Main tabs
 # --------------------------------------------------------------------------- #
-tab_recognize, tab_manage, tab_about = st.tabs(["🔍  Recognize", "🗂️  Manage database", "ℹ️  About"])
+tab_recognize, tab_manage, tab_lab, tab_about = st.tabs(
+    ["🔍  Recognize", "🗂️  Manage database", "🔬  Image Lab", "ℹ️  About"]
+)
 
 # --- Recognize tab --------------------------------------------------------- #
 with tab_recognize:
@@ -347,6 +364,35 @@ with tab_recognize:
                             use_container_width=True,
                             hide_index=True,
                         )
+
+                    # --- Who is this? (only for a confirmed match) ----------
+                    if result.status == "match" and result.identity:
+                        st.divider()
+                        with st.spinner(f"Looking up {result.identity}..."):
+                            info = get_person_summary(result.identity)
+
+                        if info is None:
+                            st.caption(
+                                f"No public bio found for **{result.identity}** "
+                                "(no matching Wikipedia page, or the lookup failed)."
+                            )
+                        else:
+                            with st.container(border=True):
+                                info_cols = st.columns([1, 3]) if info["thumbnail"] else [st.container()]
+                                if info["thumbnail"]:
+                                    info_cols[0].image(info["thumbnail"], use_container_width=True)
+                                    text_col = info_cols[1]
+                                else:
+                                    text_col = info_cols[0]
+                                with text_col:
+                                    st.markdown(f"#### {info['title']}")
+                                    st.write(info["extract"])
+                                    if info["url"]:
+                                        st.markdown(f"[Read more on Wikipedia]({info['url']})")
+                                st.caption(
+                                    "Source: Wikipedia's public API — a free, no-key lookup, "
+                                    "so this only works for identities with a Wikipedia page."
+                                )
 
 # --- Manage database tab ---------------------------------------------------- #
 with tab_manage:
@@ -445,6 +491,93 @@ with tab_manage:
                         st.cache_data.clear()
                         st.success("Database rebuilt.")
                         st.rerun()
+
+# --- Image Lab tab ------------------------------------------------------------ #
+with tab_lab:
+    st.markdown(
+        "A classic OpenCV playground for exploring an image directly - "
+        "rotation, morphological transforms, edge/contour detection, and "
+        "basic diagnostics. Independent of the recognition pipeline; use "
+        "it on any image, not just faces."
+    )
+
+    lab_upload = st.file_uploader(
+        "Upload an image to experiment on", type=["jpg", "jpeg", "png"], key="lab_uploader",
+    )
+
+    if lab_upload is None:
+        st.info("Upload an image above to get started.")
+    else:
+        lab_bytes = lab_upload.getvalue()
+        lab_pil = Image.open(io.BytesIO(lab_bytes)).convert("RGB")
+        lab_bgr = pil_to_bgr(lab_pil)
+
+        st.divider()
+        control_col, preview_col = st.columns([1, 1.6], gap="large")
+
+        with control_col:
+            st.markdown("##### Transform")
+
+            rotation_angle = st.slider("Rotate (degrees)", -180, 180, 0, 5)
+
+            st.markdown("**Morphology**")
+            morph_op = st.selectbox("Operation", ["None"] + list(MORPH_OPERATIONS.keys()))
+            morph_kernel_size = st.slider("Kernel size", 1, 31, 5, 2)
+            morph_iterations = st.slider("Iterations", 1, 10, 1)
+            morph_shape = st.selectbox("Kernel shape", list(MORPH_SHAPES.keys()))
+
+            st.markdown("**Edge / contour detection**")
+            edge_mode = st.radio("Mode", ["None", "Edges (Canny)", "Contours"], horizontal=True)
+            canny_t1 = st.slider("Canny threshold 1", 0, 400, 100, key="t1")
+            canny_t2 = st.slider("Canny threshold 2", 0, 400, 200, key="t2")
+            min_contour_area = st.slider(
+                "Min contour area (filters noise)", 10, 2000, 50,
+                disabled=(edge_mode != "Contours"),
+            )
+
+        # ---- Apply the pipeline: rotate -> morphology -> edges/contours ----
+        processed = rotate_image(lab_bgr, rotation_angle)
+
+        if morph_op != "None":
+            processed = apply_morphology(
+                processed, morph_op, kernel_size=morph_kernel_size,
+                iterations=morph_iterations, kernel_shape=morph_shape,
+            )
+
+        contour_count, contour_areas = None, None
+        if edge_mode == "Edges (Canny)":
+            processed = detect_edges(processed, canny_t1, canny_t2)
+        elif edge_mode == "Contours":
+            processed, contour_count, contour_areas = detect_contours(
+                processed, canny_t1, canny_t2, min_area=min_contour_area,
+            )
+
+        with preview_col:
+            st.markdown("##### Result")
+            st.image(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB), use_container_width=True)
+            if contour_count is not None:
+                st.caption(f"Found **{contour_count}** contour(s) above the area threshold.")
+
+        st.divider()
+        st.markdown("##### Image characteristics")
+        stats = image_characteristics(lab_bgr, file_size_bytes=len(lab_bytes))
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Dimensions", f"{stats['width']}×{stats['height']}")
+        s2.metric("File size", f"{stats['file_size_kb']} KB" if stats["file_size_kb"] else "—")
+        s3.metric("Brightness", f"{stats['mean_brightness']:.0f}/255")
+        s4.metric(
+            "Sharpness",
+            f"{stats['sharpness_laplacian_var']:.0f}",
+            help="Variance of the Laplacian - a common blur proxy. Roughly, "
+                 "below ~100 suggests a blurry image; this is a heuristic, "
+                 "not a hard rule.",
+        )
+        if stats["likely_blurry"]:
+            st.caption("⚠️ This image looks like it may be blurry (low edge/high-frequency content).")
+
+        with st.expander("Full diagnostics"):
+            st.json(stats)
 
 # --- About tab --------------------------------------------------------------- #
 with tab_about:
