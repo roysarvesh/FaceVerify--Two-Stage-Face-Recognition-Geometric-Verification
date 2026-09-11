@@ -1,0 +1,6 @@
+# Extra dependencies for train_classifier.py only - NOT needed by the
+# deployed Streamlit app (see src/learned_gate.py: inference just needs
+# three numbers and a sigmoid, no sklearn). Install with:
+#     pip install -r requirements.txt -r requirements-dev.txt
+scikit-learn>=1.3.0
+matplotlib>=3.8.0

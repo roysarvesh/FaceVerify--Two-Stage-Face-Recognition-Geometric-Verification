@@ -1,0 +1,13 @@
+{
+  "w_embedding_distance": -13.435848778676041,
+  "w_landmark_distance": -0.936620271338788,
+  "bias": 4.22819331654266,
+  "decision_threshold_probability": 0.6113867276114593,
+  "note": "probability = sigmoid(w_embedding_distance*emb_dist + w_landmark_distance*land_dist + bias); match if probability >= decision_threshold_probability",
+  "trained_on_n_pairs": 1009,
+  "cv_auc": 0.9924365653755786,
+  "cv_eer": 0.03766197537267103,
+  "target_fpr": 0.01,
+  "achieved_fpr_at_threshold": 0.0099601593625498,
+  "achieved_tpr_at_threshold": 0.9270216962524654
+}
